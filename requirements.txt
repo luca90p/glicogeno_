@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+altair
+openpyxl
+matplotlib
+fitparse
+sqlalchemy
+psycopg2-binary
