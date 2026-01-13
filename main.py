@@ -1128,191 +1128,192 @@ with tab1:
         st.caption(f"Concentrazione muscolare base: **{calculated_conc:.1f} g/kg**")
         st.caption(f"Fonte Massa Muscolare: {tank_data['muscle_source_note']}")
 
-# --- TAB 2: PREPARAZIONE & DIARIO (UNITO) ---
+# =============================================================================
+# TAB 2: DIARIO IBRIDO (LAYOUT LOGICO V4 - PORTING)
+# =============================================================================
 with tab2:
     if 'base_tank_data' not in st.session_state:
-        st.warning("Completare prima il Tab '1. Profilo Base & Capacità'.")
+        st.warning("⚠️ Completa prima il Tab 1.")
         st.stop()
         
-    weight = st.session_state['base_subject_struct'].weight_kg
+    subj_base = st.session_state['base_subject_struct']
+    # Recuperiamo o impostiamo default per FTP/THR se non ancora settati
+    user_ftp = st.session_state.get('ftp_watts_input', 250)
+    user_thr = st.session_state.get('thr_hr_input', 170)
     
-    # Inizializza i dizionari per la selezione
-    fatigue_map = {f.label: f for f in FatigueState}
-    sleep_map = {s.label: s for s in SleepQuality}
-
-    # Variabili CHO Inizializzate per prevenire NameError (assegnate alla media neutra)
-    cho_g1 = weight * DietType.NORMAL.ref_value
-    cho_g2 = weight * DietType.NORMAL.ref_value
+    st.subheader("🗓️ Diario di Avvicinamento (Timeline Oraria)")
     
-    st.subheader("Stato Pre-Gara: Analisi Rapida (48h)")
+    # --- SETUP CALENDARIO & DURATA ---
+    c_cal1, c_cal2, c_cal3 = st.columns([1, 1, 1])
     
-    col_in_2, col_res_2 = st.columns([1, 1])
+    race_date = c_cal1.date_input("Data Evento Target", value=pd.Timestamp.today() + pd.Timedelta(days=7))
+    num_days_taper = c_cal2.slider("Durata Diario (Giorni)", 2, 7, 7)
     
-    with col_in_2:
-        # SEZIONE 3: STATO NUTRIZIONALE
-        st.markdown("**1. Stato Nutrizionale (Introito CHO 48h)**")
-        st.info("La dieta degli ultimi 2 giorni ha l'influenza maggiore sul tuo metabolismo in gara (Rothschild et al., 2022).")
-        
-        diet_method = st.radio(
-            "Metodo Calcolo:", 
-            ["1. Veloce (Tipo Dieta)", "2. Preciso (Grammi CHO)"], 
-            key='diet_calc_method', horizontal=True
-        )
-        
-        if diet_method == "1. Veloce (Tipo Dieta)":
-            diet_options_map = {d.label: d for d in DietType}
-            selected_diet_label = st.selectbox("Introito Glucidico", list(diet_options_map.keys()), index=1, key='diet_type_select')
+    # Definizione semplificata stati per lo script unico
+    class GlycogenStateSimple:
+        def __init__(self, factor, label):
+            self.factor = factor
+            self.label = label
             
-            s_diet = DietType.NORMAL
-            for d in DietType:
-                if selected_diet_label.startswith(d.label):
-                    s_diet = d
-                    break
-            
-            cho_g1 = weight * s_diet.ref_value
-            cho_g2 = weight * s_diet.ref_value 
-            
-            temp_fatigue = FatigueState.RESTED
-            temp_sleep = SleepQuality.GOOD
-            
-            _, diet_factor, avg_cho_gk, _, _ = calculate_filling_factor_from_diet(
-                weight_kg=weight,
-                cho_day_minus_1_g=cho_g1,
-                cho_day_minus_2_g=cho_g2,
-                s_fatigue=temp_fatigue, 
-                s_sleep=temp_sleep,     
-                steps_m1=0, min_act_m1=0, steps_m2=0, min_act_m2=0 
-            )
-            
-        else:
-            c_d2, c_d1 = st.columns(2)
-            cho_day_minus_2_g = c_d2.number_input("CHO Giorno -2 (g)", 50, 800, 370, 10)
-            cho_day_minus_1_g = c_d1.number_input("CHO Giorno -1 (g)", 50, 800, 370, 10)
-            
-            cho_g1 = cho_day_minus_1_g
-            cho_g2 = cho_day_minus_2_g
-            
-            temp_fatigue = FatigueState.RESTED
-            temp_sleep = SleepQuality.GOOD
-            
-            _, diet_factor, avg_cho_gk, _, _ = calculate_filling_factor_from_diet(
-                weight_kg=weight,
-                cho_day_minus_1_g=cho_day_minus_1_g,
-                cho_day_minus_2_g=cho_day_minus_2_g,
-                s_fatigue=temp_fatigue, 
-                s_sleep=temp_sleep,     
-                steps_m1=0, min_act_m1=0, steps_m2=0, min_act_m2=0 
-            )
-
-        # SEZIONE 4: RECUPERO
-        st.markdown("**2. Condizione di Recupero**")
-        default_sleep_label = "Sufficiente (6-7h)"
-        default_sleep_index = list(sleep_map.keys()).index(default_sleep_label)
-        
-        s_fatigue = fatigue_map[st.selectbox("Carico di Lavoro (24h prec.)", list(fatigue_map.keys()), index=0, key='fatigue_final')]
-        s_sleep = sleep_map[st.selectbox("Qualità del Sonno (24h prec.)", list(sleep_map.keys()), index=default_sleep_index, key='sleep_final')] 
-        
-        with st.expander("Dettagli Attività Motorio/Sportiva (Opzionale)"):
-            c1, c2 = st.columns(2)
-            steps_m1 = c1.number_input("Passi Giorno -1", 0, 20000, 5000, 500)
-            min_act_m1 = c2.number_input("Minuti Sport Giorno -1", 0, 300, 30, 10)
-            steps_m2 = 0
-            min_act_m2 = 0
-
-        combined_filling, diet_factor, avg_cho_gk, _, _ = calculate_filling_factor_from_diet(
-            weight_kg=weight,
-            cho_day_minus_1_g=cho_g1,
-            cho_day_minus_2_g=cho_g2,
-            s_fatigue=s_fatigue, 
-            s_sleep=s_sleep,
-            steps_m1=steps_m1, min_act_m1=min_act_m1, steps_m2=steps_m2, min_act_m2=min_act_m2
-        )
-        
-        # SEZIONE 5: METABOLICO ACUTO
-        st.markdown("**3. Stato Metabolico Acuto (Oggi)**")
-        has_glucose = st.checkbox("Ho misurato la Glicemia", key='has_glucose_tab2')
-        glucose_val = None
-        is_fasted = False
-        
-        if has_glucose:
-            glucose_val = st.number_input("Glicemia (mg/dL)", 40, 200, 90, 1)
-        else:
-            is_fasted = st.checkbox("Allenamento a Digiuno (Morning Fasted)", key='is_fasted_tab2')
-        
-        liver_val = 100.0
-        if is_fasted: liver_val = 40.0 
-        
-        # RICALCOLO SUBJECT E TANK
-        base_subject = st.session_state['base_subject_struct']
-        subject = base_subject
-        subject.liver_glycogen_g = liver_val
-        subject.filling_factor = combined_filling
-        subject.glucose_mg_dl = glucose_val
-        
-        tank_data = calculate_tank(subject)
-        st.session_state['tank_data'] = tank_data 
-        st.session_state['tank_g'] = tank_data['actual_available_g']
-        st.session_state['subject_struct'] = subject 
-
-    with col_res_2:
-        st.markdown("### Riserve Disponibili")
-        fill_pct = tank_data['fill_pct']
-        st.metric("Livello Riempimento", f"{fill_pct:.1f}%")
-        st.progress(int(fill_pct))
-        
-        if fill_pct < 60:
-            st.error("Attenzione: Riserve ridotte. Rischio elevato.")
-        elif fill_pct < 90:
-            st.warning("Buono, ma non ottimale per gare lunghe.")
-        else:
-            st.success("Serbatoio Pieno (Ready to Race).")
-            
-        c1, c2 = st.columns(2)
-        c1.metric("Muscolo (g)", int(tank_data['muscle_glycogen_g']))
-        c2.metric("Fegato (g)", int(tank_data['liver_glycogen_g']))
+    gly_states_opts = [
+        GlycogenStateSimple(0.45, "Basso (Blocco carico)"),
+        GlycogenStateSimple(0.60, "Normale (Routine)"),
+        GlycogenStateSimple(0.80, "Alto (Ben riposato)")
+    ]
+    
+    start_label = f"Condizione a -{num_days_taper}gg"
+    sel_state = c_cal3.selectbox(start_label, gly_states_opts, format_func=lambda x: x.label, index=1)
+    
+    # --- DEFAULT SCHEDULE ---
+    with st.expander("⚙️ Orari Standard (Default)", expanded=False):
+        d_c1, d_c2 = st.columns(2)
+        def_sleep_start = d_c1.time_input("Orario Sonno (Inizio)", value=pd.to_datetime("23:00").time())
+        def_sleep_end = d_c2.time_input("Orario Sveglia", value=pd.to_datetime("07:00").time())
+        def_work_start = pd.to_datetime("18:00").time()
 
     st.markdown("---")
     
-    # --- DIARIO SETTIMANALE INTEGRATO ---
-    st.subheader("Diario Settimanale del Glicogeno (Pianificazione)")
-    st.info("Simula l'andamento del glicogeno su 7 giorni per pianificare la settimana di gara (Tapering).")
+    # --- GESTIONE STATO ---
+    if "tapering_data" not in st.session_state:
+        st.session_state["tapering_data"] = []
     
-    with st.expander("Compila il Diario Settimanale", expanded=False):
-        days = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
-        weekly_schedule = []
-        
-        # Layout a griglia per i giorni
-        for day in days:
-            st.markdown(f"**{day}**")
-            c1, c2, c3, c4 = st.columns([1.5, 1, 1.2, 1])
-            activity = c1.selectbox("Attività", ["Riposo", "Corsa", "Bici", "Altro"], key=f"{day}_act", label_visibility="collapsed")
-            duration = c2.number_input("Minuti", 0, 300, 0, key=f"{day}_dur", label_visibility="collapsed") if activity != "Riposo" else 0
-            intensity = c3.selectbox("Intensità", ["Bassa (Z1-Z2)", "Media (Z3)", "Alta (Z4+)"], key=f"{day}_int", label_visibility="collapsed") if activity != "Riposo" else "Riposo"
-            cho_in = c4.number_input("CHO (g)", 0, 1500, 300, key=f"{day}_cho", label_visibility="collapsed", help="Carboidrati totali assunti nella giornata")
-            
-            weekly_schedule.append({
-                "day": day, "activity": activity, "duration": duration, 
-                "intensity": intensity, "cho_in": cho_in
+    # Reset/Resize logica se cambia il numero di giorni
+    if len(st.session_state["tapering_data"]) != num_days_taper:
+        new_data = []
+        for i in range(num_days_taper, 0, -1):
+            day_offset = -i
+            d_date = race_date + pd.Timedelta(days=day_offset)
+            new_data.append({
+                "day_offset": day_offset,
+                "date_obj": d_date,
+                "type": "Riposo", "val": 0, "dur": 0, "cho": 300,
+                "sleep_quality": "Sufficiente (6-7h)",
+                "sleep_start": def_sleep_start, "sleep_end": def_sleep_end, "workout_start": def_work_start
             })
-            
-        if st.button("Calcola Trend Settimanale"):
-            initial_muscle = st.session_state['base_tank_data']['max_capacity_g'] - 100 
-            initial_liver = 100
-            max_muscle = st.session_state['base_tank_data']['max_capacity_g'] - 100
-            max_liver = 120 
-            vo2max_calc = st.session_state['base_subject_struct'].vo2max_absolute_l_min * 1000 / weight 
+        st.session_state["tapering_data"] = new_data
+        st.rerun()
+    else:
+        # Aggiorna date se cambia il calendario
+        for i, row in enumerate(st.session_state["tapering_data"]):
+            day_offset = - (num_days_taper - i)
+            row['date_obj'] = race_date + pd.Timedelta(days=day_offset)
+            row['day_offset'] = day_offset
 
-            df_weekly = calculate_weekly_balance(initial_muscle, initial_liver, max_muscle, max_liver, weekly_schedule, weight, vo2max_calc)
+    # --- TABELLA INPUT (RAGGRUPPATA) ---
+    cols_layout = [0.8, 2.8, 1.0, 1.4]
+    
+    h1, h2, h3, h4 = st.columns(cols_layout)
+    h1.markdown("##### 📅 Data")
+    h2.markdown("##### 🚴 Attività (Tipo, Durata, Intensità, Start)")
+    h3.markdown("##### 🍝 Nutrizione")
+    h4.markdown("##### 💤 Riposo")
+    
+    sleep_opts_map = {"Ottimale (>7h)": 1.0, "Sufficiente (6-7h)": 0.95, "Insufficiente (<6h)": 0.85}
+    type_opts = ["Riposo", "Ciclismo", "Corsa/Altro"] 
+    
+    input_result_data = [] 
+    
+    for i, row in enumerate(st.session_state["tapering_data"]):
+        st.markdown(f"<div style='border-top: 1px solid #eee; margin-bottom: 5px;'></div>", unsafe_allow_html=True)
+        
+        c1, c2, c3, c4 = st.columns(cols_layout)
+        
+        # --- COL 1: DATA ---
+        c1.write(f"**{row['date_obj'].strftime('%d/%m')}**")
+        c1.caption(f"{row['date_obj'].strftime('%a')}")
+        if row['day_offset'] >= -2: c1.markdown("🔴 *Load*")
+        
+        # --- COL 2: GRUPPO ATTIVITÀ ---
+        # Riga 1: Tipo
+        act_idx = type_opts.index(row['type']) if row['type'] in type_opts else 0
+        new_type = c2.selectbox("Tipo Attività", type_opts, index=act_idx, key=f"t_{i}", label_visibility="collapsed")
+        
+        calc_if = 0.0
+        new_dur = 0
+        new_val = 0
+        new_w_start = row.get('workout_start', def_work_start)
+        
+        if new_type != "Riposo":
+            # Riga 2: Dettagli in 3 colonne interne
+            ac_1, ac_2, ac_3 = c2.columns([1, 1, 1])
             
-            st.markdown("### 📉 Andamento Riserve Glicogeno (7 Giorni)")
+            new_dur = ac_1.number_input("Minuti", 0, 400, row['dur'], step=15, key=f"d_{i}", help="Durata")
             
-            chart_weekly_line = alt.Chart(df_weekly).mark_line(point=True).encode(
-                x=alt.X('Giorno', sort=days),
-                y=alt.Y('Totale', title='Glicogeno Totale (g)'),
-                tooltip=['Giorno', 'Totale', 'Glicogeno Muscolare', 'Glicogeno Epatico', 'Allenamento', 'CHO In']
-            ).properties(height=300)
+            help_lbl = "Watt" if new_type == "Ciclismo" else "Bpm"
+            new_val = ac_2.number_input(help_lbl, 0, 500, row['val'], step=10, key=f"v_{i}", help="Intensità Media")
             
-            st.altair_chart(chart_weekly_line, use_container_width=True)
+            new_w_start = ac_3.time_input("Start", new_w_start, key=f"ws_{i}", help="Orario Inizio Allenamento")
+            
+            # Calcolo IF per feedback
+            if new_type == "Ciclismo" and user_ftp > 0: calc_if = new_val / user_ftp
+            elif new_type == "Corsa/Altro" and user_thr > 0: calc_if = new_val / user_thr
+            
+            if calc_if > 0: ac_2.caption(f"IF: **{calc_if:.2f}**")
+        else:
+            c2.caption("Nessuna attività fisica prevista.")
+            
+        # --- COL 3: NUTRIZIONE ---
+        new_cho = c3.number_input("CHO Totali (g)", 0, 2000, row['cho'], step=50, key=f"c_{i}")
+        kg_rel = new_cho / subj_base.weight_kg
+        c3.caption(f"**{kg_rel:.1f}** g/kg")
+        
+        # --- COL 4: RIPOSO ---
+        sq_idx = list(sleep_opts_map.keys()).index(row['sleep_quality']) if row['sleep_quality'] in sleep_opts_map else 0
+        new_sq = c4.selectbox("Qualità Sonno", list(sleep_opts_map.keys()), index=sq_idx, key=f"sq_{i}", label_visibility="collapsed")
+        
+        sl_1, sl_2 = c4.columns(2)
+        new_s_start = sl_1.time_input("Inizio", row.get('sleep_start', def_sleep_start), key=f"ss_{i}", label_visibility="collapsed", help="Ora in cui vai a dormire")
+        new_s_end = sl_2.time_input("Fine", row.get('sleep_end', def_sleep_end), key=f"se_{i}", label_visibility="collapsed", help="Ora sveglia")
+
+        # Update Session
+        st.session_state["tapering_data"][i].update({
+            "type": new_type, "val": new_val, "dur": new_dur, "cho": new_cho,
+            "sleep_start": new_s_start, "sleep_end": new_s_end, "workout_start": new_w_start,
+            "sleep_quality": new_sq
+        })
+        
+        input_result_data.append({
+            "date_obj": row['date_obj'],
+            "type": new_type, "val": new_val, "duration": new_dur, "calculated_if": calc_if,
+            "cho_in": new_cho, "sleep_factor": sleep_opts_map[new_sq],
+            "sleep_start": new_s_start, "sleep_end": new_s_end, "workout_start": new_w_start
+        })
+
+    st.markdown("---")
+
+    # --- SIMULAZIONE ---
+    if st.button("🚀 Calcola Traiettoria Oraria", type="primary"):
+        # Chiamata alla funzione logica integrata
+        df_hourly, final_tank = calculate_hourly_tapering(subj_base, input_result_data, start_state_factor=sel_state)
+        
+        # Salvataggio nel Session State globale (collegamento al Tab 3)
+        st.session_state['tank_data'] = final_tank
+        st.session_state['tank_g'] = final_tank['actual_available_g'] # Flag per sbloccare Tab 3
+        #st.session_state['subject_struct'] = subj_base
+        
+        st.markdown("### 📈 Evoluzione Oraria Riserve (Timeline)")
+        
+        # Grafico Area Stacked (Fegato + Muscolo)
+        df_melt = df_hourly.melt('Timestamp', value_vars=['Muscolare', 'Epatico'], var_name='Riserva', value_name='Grammi')
+        c_range = ['#43A047', '#FB8C00'] 
+        
+        chart = alt.Chart(df_melt).mark_area(opacity=0.8).encode(
+            x=alt.X('Timestamp', title='Data/Ora', axis=alt.Axis(format='%d/%m %H:%M')),
+            y=alt.Y('Grammi', stack=True),
+            color=alt.Color('Riserva', scale=alt.Scale(domain=['Muscolare', 'Epatico'], range=c_range)),
+            tooltip=['Timestamp', 'Riserva', 'Grammi']
+        ).properties(height=350).interactive()
+        
+        st.altair_chart(chart, use_container_width=True)
+        
+        k1, k2, k3 = st.columns(3)
+        pct = final_tank['fill_pct']
+        k1.metric("Riempimento Finale", f"{pct:.1f}%")
+        k2.metric("Muscolo Start Gara", f"{int(final_tank['muscle_glycogen_g'])} g")
+        k3.metric("Fegato Start Gara", f"{int(final_tank['liver_glycogen_g'])} g", 
+                  delta="Attenzione" if final_tank['liver_glycogen_g'] < 80 else "Ottimale", delta_color="normal")
+        
+        st.success("✅ Dati salvati. Puoi procedere al Tab 3 per la simulazione gara.")
 
 
 # --- TAB 3: SIMULAZIONE & STRATEGIA ---
