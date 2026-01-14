@@ -793,42 +793,70 @@ def parse_zwo_file(uploaded_file, ftp_watts, thr_hr, sport_type):
 # --- PARSER METABOLICO (NUOVO) ---
 def parse_metabolic_report(uploaded_file):
     """
-    Legge file CSV/Excel da metabolimetro e estrae curve CHO/FAT.
+    Legge file CSV/Excel da metabolimetro in modo ROBUSTO (Versione Aggiornata).
+    Gestisce separatori italiani (;), codifiche strane e header sparsi.
     """
     try:
         df_raw = None
-        uploaded_file.seek(0)
+        uploaded_file.seek(0) # Fondamentale: resetta il puntatore a inizio file
         
-        # 1. Lettura File "Agnostica"
-        if uploaded_file.name.lower().endswith(('.csv', '.txt')):
+        filename = uploaded_file.name.lower()
+
+        # --- 1. LETTURA FILE (SCENARI MULTIPLI) ---
+        if filename.endswith(('.xls', '.xlsx')):
+            try:
+                df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
+            except Exception as e:
+                return None, None, f"Errore Excel: {str(e)}"
+        
+        elif filename.endswith(('.csv', '.txt')):
+            # TENTATIVO 1: Motore Python automatico (sniffing) + Latin-1
             try:
                 df_raw = pd.read_csv(uploaded_file, header=None, sep=None, engine='python', encoding='latin-1', dtype=str)
             except:
+                pass
+            
+            # TENTATIVO 2: Se fallisce o legge male, prova UTF-8 con separatore punto e virgola (CSV Italiani/Europei)
+            # Verifica: se df_raw è None o ha 1 sola colonna (segno che il separatore è sbagliato)
+            if df_raw is None or df_raw.shape[1] < 2:
                 uploaded_file.seek(0)
-                df_raw = pd.read_csv(uploaded_file, header=None, sep=',', engine='python', encoding='utf-8', dtype=str)
-        elif uploaded_file.name.lower().endswith(('.xls', '.xlsx')):
-            df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
-        else:
-            return None, None, "Formato non supportato (usa .csv o .xlsx)"
+                try:
+                    df_raw = pd.read_csv(uploaded_file, header=None, sep=';', engine='python', encoding='utf-8', dtype=str)
+                except:
+                    pass
 
-        if df_raw is None or df_raw.empty: return None, None, "File vuoto."
+            # TENTATIVO 3: Standard Americano (Virgola)
+            if df_raw is None or df_raw.shape[1] < 2:
+                uploaded_file.seek(0)
+                try:
+                    df_raw = pd.read_csv(uploaded_file, header=None, sep=',', engine='python', encoding='utf-8', dtype=str)
+                except:
+                    return None, None, "Impossibile leggere il formato CSV. Verifica separatori."
 
-        # 2. Scansione Header Intelligente
+        if df_raw is None or df_raw.empty: return None, None, "File vuoto o illeggibile."
+
+        # --- 2. RICERCA HEADER (SCANSIONE INTELLIGENTE) ---
         header_idx = None
-        # Parole chiave da cercare
-        targets = ["CHO", "FAT", "CARBO", "LIPID"]
-        intensities = ["WATT", "LOAD", "POWER", "HR", "BPM", "HEART", "SPEED", "VEL"]
+        # Dizionario sinonimi esteso
+        targets = ["CHO", "FAT", "CARBO", "LIPID", "VCO2", "VO2"]
+        intensities = ["WATT", "LOAD", "POWER", "POW", "HR", "BPM", "HEART", "FC", "SPEED", "VEL", "KM/H"]
 
+        # Scansioniamo le prime 50 righe
         for i, row in df_raw.head(50).iterrows():
+            # Converte tutta la riga in una stringa maiuscola per cercare
             row_text = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
-            # Se la riga contiene almeno un target metabolico e un target intensità
-            if any(t in row_text for t in targets) and any(i in row_text for i in intensities):
+            
+            has_metabolic = any(t in row_text for t in targets)
+            has_intensity = any(inte in row_text for inte in intensities)
+            
+            if has_metabolic and has_intensity:
                 header_idx = i
                 break
         
-        if header_idx is None: return None, None, "Intestazione colonne non trovata (cerca CHO/FAT e Watt/HR)."
+        if header_idx is None: 
+            return None, None, "Intestazione non trovata. Il file deve contenere colonne come 'CHO/FAT' e 'Watt/HR'."
 
-        # 3. Slice e Mapping
+        # --- 3. SLICING E PULIZIA ---
         df_raw.columns = df_raw.iloc[header_idx] 
         df = df_raw.iloc[header_idx + 1:].reset_index(drop=True)
         df.columns = [str(c).strip().upper() for c in df.columns]
@@ -838,24 +866,27 @@ def parse_metabolic_report(uploaded_file):
         def find_col(keys):
             for col in cols:
                 for k in keys:
-                    if k == col or (k in col and len(col) < len(k)+6): return col
+                    if k == col or (k in col): return col
             return None
 
-        # Mappatura Colonne
+        # Mappatura
         c_cho = find_col(['CHO', 'CARBOHYDRATES', 'QCHO', 'CARB'])
-        c_fat = find_col(['FAT', 'LIPIDS', 'QFAT'])
+        c_fat = find_col(['FAT', 'LIPIDS', 'QFAT', 'FAT'])
         
-        # Mappatura Intensità (Priorità ai Watt, poi HR, poi Speed)
-        c_watt = find_col(['WATT', 'POWER', 'POW', 'LOAD'])
+        c_watt = find_col(['WATT', 'POWER', 'POW', 'LOAD', 'WR'])
         c_hr = find_col(['HR', 'HEART', 'BPM', 'FC'])
-        c_speed = find_col(['SPEED', 'VEL', 'KM/H'])
+        c_speed = find_col(['SPEED', 'VEL', 'KM/H', 'V'])
 
-        if not (c_cho and c_fat): return None, None, "Colonne CHO o FAT mancanti."
+        if not (c_cho and c_fat): 
+            return None, None, f"Colonne CHO/FAT non identificate. Trovate: {cols}"
 
-        # 4. Pulizia e Conversione
+        # --- 4. CONVERSIONE NUMERICA ROBUSTA ---
         def to_float(series):
-            # Rimuove virgole europee e converte
-            s = series.astype(str).str.replace(',', '.', regex=False).str.extract(r'(\d+\.?\d*)')[0]
+            s = series.astype(str)
+            # Sostituisce virgole con punti (formato europeo)
+            s = s.str.replace(',', '.', regex=False)
+            # Estrae solo i numeri float
+            s = s.str.extract(r'([-+]?\d*\.?\d+)')[0]
             return pd.to_numeric(s, errors='coerce')
 
         clean_df = pd.DataFrame()
@@ -865,27 +896,33 @@ def parse_metabolic_report(uploaded_file):
         available_metrics = []
         if c_watt: 
             clean_df['Watt'] = to_float(df[c_watt])
-            available_metrics.append('Watt')
+            if clean_df['Watt'].max() > 0: available_metrics.append('Watt')
         if c_hr: 
             clean_df['HR'] = to_float(df[c_hr])
-            available_metrics.append('HR')
+            if clean_df['HR'].max() > 0: available_metrics.append('HR')
         if c_speed: 
             clean_df['Speed'] = to_float(df[c_speed])
-            available_metrics.append('Speed')
+            if clean_df['Speed'].max() > 0: available_metrics.append('Speed')
 
-        if not available_metrics: return None, None, "Nessuna colonna di intensità (Watt/HR/Speed) trovata."
+        if not available_metrics: 
+            return None, None, "Nessuna colonna di intensità valida (Watt/HR/Speed > 0) trovata."
 
         clean_df.dropna(subset=['CHO', 'FAT'], inplace=True)
         
-        # 5. Normalizzazione Unità (g/min -> g/h)
-        # Euristica: se il max CHO è < 10, probabilmente è g/min. Se > 20, è g/h.
+        # --- 5. NORMALIZZAZIONE UNITÀ ---
+        # Se i valori di CHO sono bassi (< 10), probabilmente sono g/min -> converti in g/h
         if not clean_df.empty and clean_df['CHO'].max() < 10.0:
             clean_df['CHO'] *= 60
             clean_df['FAT'] *= 60
             
+        # Ordina per evitare grafici a zig-zag
+        primary_metric = available_metrics[0]
+        clean_df = clean_df.sort_values(by=primary_metric).reset_index(drop=True)
+
         return clean_df, available_metrics, None
 
-    except Exception as e: return None, None, str(e)
+    except Exception as e: 
+        return None, None, f"Errore critico parsing: {str(e)}"
 
 def interpolate_from_curve(current_val, curve_df, x_col):
     """
