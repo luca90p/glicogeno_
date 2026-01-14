@@ -1455,7 +1455,7 @@ with tab3:
         # Recupero i dati completi
         tank_data = st.session_state['tank_data']
         start_tank = tank_data['actual_available_g']
-        subj = st.session_state.get('subject_struct', None)
+        subj = st.session_state.get('subject_struct', st.session_state.get('base_subject_struct', None))
         
         # Recupero i dati di soglia dal Tab 1
         ftp_watts = st.session_state.get('ftp_watts_input', 250)
