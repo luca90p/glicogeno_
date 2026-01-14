@@ -793,70 +793,78 @@ def parse_zwo_file(uploaded_file, ftp_watts, thr_hr, sport_type):
 # --- PARSER METABOLICO (NUOVO) ---
 def parse_metabolic_report(uploaded_file):
     """
-    Legge file CSV/Excel da metabolimetro in modo ROBUSTO (Versione Aggiornata).
-    Gestisce separatori italiani (;), codifiche strane e header sparsi.
+    Legge file CSV/Excel da metabolimetro (Versione Lite Fix).
     """
+    import re
     try:
         df_raw = None
-        uploaded_file.seek(0) # Fondamentale: resetta il puntatore a inizio file
+        # Reset assoluto del puntatore (fondamentale in Streamlit)
+        uploaded_file.seek(0)
         
         filename = uploaded_file.name.lower()
 
-        # --- 1. LETTURA FILE (SCENARI MULTIPLI) ---
+        # --- 1. LETTURA FILE ---
         if filename.endswith(('.xls', '.xlsx')):
             try:
+                # Forza engine openpyxl (richiede pip install openpyxl)
+                df_raw = pd.read_excel(uploaded_file, header=None, dtype=str, engine='openpyxl')
+            except ImportError:
+                # Fallback se manca openpyxl (prova default)
+                uploaded_file.seek(0)
                 df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
             except Exception as e:
-                return None, None, f"Errore Excel: {str(e)}"
+                return None, None, f"Errore lettura Excel: {e}"
         
         elif filename.endswith(('.csv', '.txt')):
-            # TENTATIVO 1: Motore Python automatico (sniffing) + Latin-1
-            try:
-                df_raw = pd.read_csv(uploaded_file, header=None, sep=None, engine='python', encoding='latin-1', dtype=str)
-            except:
-                pass
+            # Prova vari encoding e separatori
+            encodings = ['latin-1', 'utf-8', 'cp1252']
+            separators = [None, ';', ','] # None lascia fare a Python sniffer
             
-            # TENTATIVO 2: Se fallisce o legge male, prova UTF-8 con separatore punto e virgola (CSV Italiani/Europei)
-            # Verifica: se df_raw è None o ha 1 sola colonna (segno che il separatore è sbagliato)
-            if df_raw is None or df_raw.shape[1] < 2:
-                uploaded_file.seek(0)
-                try:
-                    df_raw = pd.read_csv(uploaded_file, header=None, sep=';', engine='python', encoding='utf-8', dtype=str)
-                except:
-                    pass
+            for enc in encodings:
+                for sep in separators:
+                    if df_raw is None:
+                        try:
+                            uploaded_file.seek(0)
+                            df_temp = pd.read_csv(uploaded_file, header=None, sep=sep, engine='python', encoding=enc, dtype=str)
+                            # Se ha più di 1 colonna, probabilmente è buono
+                            if df_temp.shape[1] > 1:
+                                df_raw = df_temp
+                                break
+                        except:
+                            continue
+                if df_raw is not None: break
 
-            # TENTATIVO 3: Standard Americano (Virgola)
-            if df_raw is None or df_raw.shape[1] < 2:
-                uploaded_file.seek(0)
-                try:
-                    df_raw = pd.read_csv(uploaded_file, header=None, sep=',', engine='python', encoding='utf-8', dtype=str)
-                except:
-                    return None, None, "Impossibile leggere il formato CSV. Verifica separatori."
+        if df_raw is None or df_raw.empty: 
+            return None, None, "File vuoto o formato sconosciuto."
 
-        if df_raw is None or df_raw.empty: return None, None, "File vuoto o illeggibile."
+        # --- DEBUG VISIVO (Opzionale: togliere in produzione) ---
+        # Se vuoi vedere cosa legge lo script, scommenta la riga sotto:
+        # st.write("Anteprima dati grezzi:", df_raw.head(10))
 
-        # --- 2. RICERCA HEADER (SCANSIONE INTELLIGENTE) ---
+        # --- 2. RICERCA HEADER ---
         header_idx = None
-        # Dizionario sinonimi esteso
-        targets = ["CHO", "FAT", "CARBO", "LIPID", "VCO2", "VO2"]
-        intensities = ["WATT", "LOAD", "POWER", "POW", "HR", "BPM", "HEART", "FC", "SPEED", "VEL", "KM/H"]
+        # Lista estesa e maiuscola
+        targets = ["CHO", "FAT", "CARBO", "LIPID", "VCO2", "VO2", "QCHO", "QFAT"]
+        intensities = ["WATT", "LOAD", "POWER", "POW", "WR", "HR", "BPM", "HEART", "FC", "SPEED", "VEL", "KM/H"]
 
-        # Scansioniamo le prime 50 righe
         for i, row in df_raw.head(50).iterrows():
-            # Converte tutta la riga in una stringa maiuscola per cercare
+            # Crea una stringa pulita della riga
             row_text = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
             
+            # Cerca intersezioni
             has_metabolic = any(t in row_text for t in targets)
-            has_intensity = any(inte in row_text for inte in intensities)
+            has_intensity = any(i in row_text for i in intensities)
             
             if has_metabolic and has_intensity:
                 header_idx = i
                 break
         
         if header_idx is None: 
-            return None, None, "Intestazione non trovata. Il file deve contenere colonne come 'CHO/FAT' e 'Watt/HR'."
+            # Mostra cosa ha letto per capire l'errore (utile per debug)
+            preview = df_raw.head(5).to_string()
+            return None, None, f"Intestazione non trovata. Prime righe lette:\n{preview}"
 
-        # --- 3. SLICING E PULIZIA ---
+        # --- 3. SLICING & CLEANING ---
         df_raw.columns = df_raw.iloc[header_idx] 
         df = df_raw.iloc[header_idx + 1:].reset_index(drop=True)
         df.columns = [str(c).strip().upper() for c in df.columns]
@@ -869,23 +877,21 @@ def parse_metabolic_report(uploaded_file):
                     if k == col or (k in col): return col
             return None
 
-        # Mappatura
-        c_cho = find_col(['CHO', 'CARBOHYDRATES', 'QCHO', 'CARB'])
-        c_fat = find_col(['FAT', 'LIPIDS', 'QFAT', 'FAT'])
+        c_cho = find_col(['CHO', 'CARBOHYDRATES', 'QCHO'])
+        c_fat = find_col(['FAT', 'LIPIDS', 'QFAT'])
         
         c_watt = find_col(['WATT', 'POWER', 'POW', 'LOAD', 'WR'])
         c_hr = find_col(['HR', 'HEART', 'BPM', 'FC'])
-        c_speed = find_col(['SPEED', 'VEL', 'KM/H', 'V'])
+        c_speed = find_col(['SPEED', 'VEL', 'KM/H'])
 
         if not (c_cho and c_fat): 
-            return None, None, f"Colonne CHO/FAT non identificate. Trovate: {cols}"
+            return None, None, f"Colonne CHO/FAT non trovate. Colonne rilevate: {cols}"
 
-        # --- 4. CONVERSIONE NUMERICA ROBUSTA ---
+        # --- 4. CONVERSIONE ---
         def to_float(series):
             s = series.astype(str)
-            # Sostituisce virgole con punti (formato europeo)
             s = s.str.replace(',', '.', regex=False)
-            # Estrae solo i numeri float
+            # Regex robusta che cattura float anche dentro testo
             s = s.str.extract(r'([-+]?\d*\.?\d+)')[0]
             return pd.to_numeric(s, errors='coerce')
 
@@ -904,25 +910,19 @@ def parse_metabolic_report(uploaded_file):
             clean_df['Speed'] = to_float(df[c_speed])
             if clean_df['Speed'].max() > 0: available_metrics.append('Speed')
 
-        if not available_metrics: 
-            return None, None, "Nessuna colonna di intensità valida (Watt/HR/Speed > 0) trovata."
-
         clean_df.dropna(subset=['CHO', 'FAT'], inplace=True)
         
-        # --- 5. NORMALIZZAZIONE UNITÀ ---
-        # Se i valori di CHO sono bassi (< 10), probabilmente sono g/min -> converti in g/h
         if not clean_df.empty and clean_df['CHO'].max() < 10.0:
             clean_df['CHO'] *= 60
             clean_df['FAT'] *= 60
             
-        # Ordina per evitare grafici a zig-zag
-        primary_metric = available_metrics[0]
-        clean_df = clean_df.sort_values(by=primary_metric).reset_index(drop=True)
+        if not available_metrics: return None, None, "Nessun dato intensità valido."
+        
+        clean_df = clean_df.sort_values(by=available_metrics[0]).reset_index(drop=True)
 
         return clean_df, available_metrics, None
 
-    except Exception as e: 
-        return None, None, f"Errore critico parsing: {str(e)}"
+    except Exception as e: return None, None, str(e)
 
 def interpolate_from_curve(current_val, curve_df, x_col):
     """
