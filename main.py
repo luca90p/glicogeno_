@@ -1634,19 +1634,58 @@ with tab3:
             use_lab = st.checkbox("Usa Dati Reali da Metabolimetro (Test)", help="Se hai fatto un test del gas in laboratorio, inserisci i dati reali per la massima precisione.")
             act_params['use_lab_data'] = use_lab
             
+            # --- BLOCCO GESTIONE LAB DATA ---
+            st.markdown("---")
+            use_lab = st.checkbox("🔬 Usa Profilo Metabolico (Upload File)", help="Carica un file CSV/Excel esportato dal metabolimetro (Cosmed, Cortex, etc.)")
+            act_params['use_lab_data'] = use_lab
+            
+            curve_ready = False
+            
             if use_lab:
-                st.info("Inserisci i consumi misurati al **Ritmo Gara** previsto.")
-                lab_cho = st.number_input("Consumo CHO (g/h) da Test", 0, 400, 180, 5)
-                lab_fat = st.number_input("Consumo Grassi (g/h) da Test", 0, 150, 30, 5)
-                act_params['lab_cho_g_h'] = lab_cho
-                act_params['lab_fat_g_h'] = lab_fat
-                crossover = 75 
-            else:
+                st.info("Carica il report contenente almeno le colonne: **Watt/HR** e **CHO/FAT**.")
+                uploaded_report = st.file_uploader("Carica Report (.csv, .xlsx)", type=['csv', 'xlsx', 'txt'], key="meta_upl")
+                
+                if uploaded_report:
+                    df_curve, metrics, err = parse_metabolic_report(uploaded_report)
+                    
+                    if df_curve is not None:
+                        st.success("✅ File interpretato correttamente!")
+                        
+                        # Selettore Asse X (se il file ha sia Watt che HR)
+                        x_metric = metrics[0]
+                        if len(metrics) > 1:
+                            x_metric = st.radio("Seleziona parametro di riferimento (Asse X):", metrics, horizontal=True)
+                        
+                        # Salvataggio parametri per la simulazione
+                        act_params['metabolic_curve_df'] = df_curve
+                        act_params['metabolic_x_col'] = x_metric
+                        
+                        # Anteprima Grafica Curva
+                        c_chart = alt.Chart(df_curve).mark_line(point=True).encode(
+                            x=alt.X(x_metric, title=f'Intensità ({x_metric})'),
+                            y=alt.Y('CHO', title='Grammi/Ora (g/h)'),
+                            color=alt.value('#FFA726'),
+                            tooltip=[x_metric, 'CHO', 'FAT']
+                        ) + alt.Chart(df_curve).mark_line(point=True).encode(
+                            x=x_metric, y='FAT', color=alt.value('#66BB6A')
+                        )
+                        
+                        st.altair_chart(c_chart.properties(height=200, title="Curve Substrati (Arancio=CHO, Verde=FAT)"), use_container_width=True)
+                        
+                        curve_ready = True
+                        crossover = 75 # Dummy value, non usato col file
+                        
+                    else:
+                        st.error(f"Errore lettura: {err}")
+                else:
+                    st.caption("In attesa di file...")
+            
+            if not use_lab:
+                # Se non usa il lab, mostra il vecchio slider crossover
                 crossover = st.slider("Crossover Point (Soglia Aerobica) [% Soglia]", 50, 85, 70, 5,
-                                      help="Punto in cui il consumo di grassi e carboidrati è equivalente (RER ~0.85).")
+                                      help="Punto in cui il consumo di grassi e carboidrati è equivalente.")
                 if crossover > 75: st.caption("Profilo: Alta efficienza lipolitica (Diesel)")
                 elif crossover < 60: st.caption("Profilo: Prevalenza glicolitica (Turbo)")
-                else: st.caption("Profilo: Bilanciato / Misto")
             
             st.markdown("---")
             st.subheader("3. Calibrazione Fisiologica (Utenti Esperti)")
