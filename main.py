@@ -771,6 +771,117 @@ def parse_zwo_file(uploaded_file, ftp_watts, thr_hr, sport_type):
     
     return [], 0, 0, 0
 
+# --- PARSER METABOLICO (NUOVO) ---
+def parse_metabolic_report(uploaded_file):
+    """
+    Legge file CSV/Excel da metabolimetro e estrae curve CHO/FAT.
+    """
+    try:
+        df_raw = None
+        uploaded_file.seek(0)
+        
+        # 1. Lettura File "Agnostica"
+        if uploaded_file.name.lower().endswith(('.csv', '.txt')):
+            try:
+                df_raw = pd.read_csv(uploaded_file, header=None, sep=None, engine='python', encoding='latin-1', dtype=str)
+            except:
+                uploaded_file.seek(0)
+                df_raw = pd.read_csv(uploaded_file, header=None, sep=',', engine='python', encoding='utf-8', dtype=str)
+        elif uploaded_file.name.lower().endswith(('.xls', '.xlsx')):
+            df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
+        else:
+            return None, None, "Formato non supportato (usa .csv o .xlsx)"
+
+        if df_raw is None or df_raw.empty: return None, None, "File vuoto."
+
+        # 2. Scansione Header Intelligente
+        header_idx = None
+        # Parole chiave da cercare
+        targets = ["CHO", "FAT", "CARBO", "LIPID"]
+        intensities = ["WATT", "LOAD", "POWER", "HR", "BPM", "HEART", "SPEED", "VEL"]
+
+        for i, row in df_raw.head(50).iterrows():
+            row_text = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
+            # Se la riga contiene almeno un target metabolico e un target intensità
+            if any(t in row_text for t in targets) and any(i in row_text for i in intensities):
+                header_idx = i
+                break
+        
+        if header_idx is None: return None, None, "Intestazione colonne non trovata (cerca CHO/FAT e Watt/HR)."
+
+        # 3. Slice e Mapping
+        df_raw.columns = df_raw.iloc[header_idx] 
+        df = df_raw.iloc[header_idx + 1:].reset_index(drop=True)
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        cols = df.columns.tolist()
+
+        def find_col(keys):
+            for col in cols:
+                for k in keys:
+                    if k == col or (k in col and len(col) < len(k)+6): return col
+            return None
+
+        # Mappatura Colonne
+        c_cho = find_col(['CHO', 'CARBOHYDRATES', 'QCHO', 'CARB'])
+        c_fat = find_col(['FAT', 'LIPIDS', 'QFAT'])
+        
+        # Mappatura Intensità (Priorità ai Watt, poi HR, poi Speed)
+        c_watt = find_col(['WATT', 'POWER', 'POW', 'LOAD'])
+        c_hr = find_col(['HR', 'HEART', 'BPM', 'FC'])
+        c_speed = find_col(['SPEED', 'VEL', 'KM/H'])
+
+        if not (c_cho and c_fat): return None, None, "Colonne CHO o FAT mancanti."
+
+        # 4. Pulizia e Conversione
+        def to_float(series):
+            # Rimuove virgole europee e converte
+            s = series.astype(str).str.replace(',', '.', regex=False).str.extract(r'(\d+\.?\d*)')[0]
+            return pd.to_numeric(s, errors='coerce')
+
+        clean_df = pd.DataFrame()
+        clean_df['CHO'] = to_float(df[c_cho])
+        clean_df['FAT'] = to_float(df[c_fat])
+        
+        available_metrics = []
+        if c_watt: 
+            clean_df['Watt'] = to_float(df[c_watt])
+            available_metrics.append('Watt')
+        if c_hr: 
+            clean_df['HR'] = to_float(df[c_hr])
+            available_metrics.append('HR')
+        if c_speed: 
+            clean_df['Speed'] = to_float(df[c_speed])
+            available_metrics.append('Speed')
+
+        if not available_metrics: return None, None, "Nessuna colonna di intensità (Watt/HR/Speed) trovata."
+
+        clean_df.dropna(subset=['CHO', 'FAT'], inplace=True)
+        
+        # 5. Normalizzazione Unità (g/min -> g/h)
+        # Euristica: se il max CHO è < 10, probabilmente è g/min. Se > 20, è g/h.
+        if not clean_df.empty and clean_df['CHO'].max() < 10.0:
+            clean_df['CHO'] *= 60
+            clean_df['FAT'] *= 60
+            
+        return clean_df, available_metrics, None
+
+    except Exception as e: return None, None, str(e)
+
+def interpolate_from_curve(current_val, curve_df, x_col):
+    """
+    Interpolazione lineare per trovare CHO/FAT a una data intensità.
+    """
+    if curve_df is None or curve_df.empty: return 0, 0
+    
+    # Ordina per asse X
+    df = curve_df.sort_values(x_col)
+    
+    cho = np.interp(current_val, df[x_col], df['CHO'])
+    fat = np.interp(current_val, df[x_col], df['FAT'])
+    
+    return cho, fat # g/h
+
 # --- FUNZIONI PER LE ZONE DI ALLENAMENTO ---
 
 def calculate_zones_cycling(ftp):
