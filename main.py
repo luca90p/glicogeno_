@@ -577,16 +577,34 @@ def simulate_metabolism(
             total_exo_oxidation_cumulative += current_exo_oxidation_g_min
         
         if is_lab_data:
-            fatigue_mult = 1.0 + ((t - 30) * 0.0005) if t > 30 else 1.0 
-            total_cho_demand = lab_cho_rate * fatigue_mult 
-
+            curve_df = activity_params.get('metabolic_curve_df')
+            x_col = activity_params.get('metabolic_x_col', 'Watt')
+            
+            # Determina il valore X corrente (Watt, HR o Speed)
+            current_x_val = 0
+            if x_col == 'Watt':
+                # Power corrente (se c'è una serie, usala, altrimenti usa la media)
+                current_x_val = current_intensity_factor * ftp_watts if mode == 'cycling' else avg_power
+            elif x_col == 'HR':
+                # Stima HR lineare se non abbiamo dati precisi, o usa avg
+                current_x_val = avg_hr * current_intensity_factor / intensity_factor_reference if intensity_factor_reference > 0 else avg_hr
+            elif x_col == 'Speed':
+                current_x_val = activity_params.get('speed_kmh', 10) # Fallback semplice
+            
+            # Interpola dalla curva caricata
+            cho_rate_now, fat_rate_now = interpolate_from_curve(current_x_val, curve_df, x_col)
+            
+            # Applica drift fatica se la durata è lunga (> 60 min)
+            fatigue_drift = 1.0 + ((t - 60) * 0.001) if t > 60 else 1.0
+            
+            total_cho_demand = (cho_rate_now / 60.0) * fatigue_drift # g/min
+            current_fat_g_min = (fat_rate_now / 60.0) # g/min
+            
             kcal_cho_demand = total_cho_demand * 4.1
             
-            glycogen_burned_per_min = total_cho_demand - current_exo_oxidation_g_min
-            min_endo = total_cho_demand * 0.2 
-            if glycogen_burned_per_min < min_endo: glycogen_burned_per_min = min_endo
-            lab_fat_rate_min = lab_fat_rate / 60
-            cho_ratio = total_cho_demand / (total_cho_demand + lab_fat_rate_min) if (total_cho_demand + lab_fat_rate_min) > 0 else 0
+            # RER fittizio per output
+            tot_sub = total_cho_demand + current_fat_g_min
+            cho_ratio = total_cho_demand / tot_sub if tot_sub > 0 else 1.0
             rer = 0.7 + (0.3 * cho_ratio) 
         
         else:
