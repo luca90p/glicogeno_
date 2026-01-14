@@ -1631,9 +1631,6 @@ with tab3:
             )
 
             st.markdown("---")
-
-            use_lab = st.checkbox("Usa Dati Reali da Metabolimetro (Test)", help="Se hai fatto un test del gas in laboratorio, inserisci i dati reali per la massima precisione.")
-            act_params['use_lab_data'] = use_lab
             
             # --- BLOCCO GESTIONE LAB DATA ---
             st.markdown("---")
