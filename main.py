@@ -847,7 +847,7 @@ def parse_metabolic_report(uploaded_file):
         targets = ["CHO", "FAT", "CARBO", "LIPID", "VCO2", "VO2", "QCHO", "QFAT"]
         intensities = ["WATT", "LOAD", "POWER", "POW", "WR", "HR", "BPM", "HEART", "FC", "SPEED", "VEL", "KM/H"]
 
-        for i, row in df_raw.head(50).iterrows():
+        for i, row in df_raw.head(300).iterrows():
             # Crea una stringa pulita della riga
             row_text = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
             
